@@ -5,6 +5,8 @@
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/aggregate_function.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
 #include "telemetry.hpp"
@@ -179,7 +181,7 @@ void ParseOneOption(const string &fname, PredictBindData &bind, const string &ke
 }
 
 void ParseOptionsArgument(ClientContext &context, Expression &expr, PredictBindData &bind, const string &fname) {
-	const auto type_id = expr.return_type.id();
+	const auto type_id = expr.GetReturnType().id();
 	if (type_id == LogicalTypeId::SQLNULL || type_id == LogicalTypeId::UNKNOWN) {
 		return; // NULL options → defaults
 	}
@@ -210,7 +212,7 @@ void ParseOptionsArgument(ClientContext &context, Expression &expr, PredictBindD
 		auto &child_types = StructType::GetChildTypes(opts_value.type());
 		auto &children = StructValue::GetChildren(opts_value);
 		for (idx_t i = 0; i < children.size(); i++) {
-			ParseOneOption(fname, bind, child_types[i].first, children[i].IsNull() ? string() : children[i].ToString());
+			ParseOneOption(fname, bind, child_types[i].first.GetIdentifierName(), children[i].IsNull() ? string() : children[i].ToString());
 		}
 	}
 }
@@ -237,19 +239,21 @@ string ExpandUserHome(const string &path) {
 	return string(home) + path.substr(1);
 }
 
-unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFunction &function,
-                                             vector<unique_ptr<Expression>> &arguments, const string &fname,
+unique_ptr<FunctionData> PredictBindInternal(BindAggregateFunctionInput &input, const string &fname,
                                              bool is_window) {
+	auto &context = input.GetClientContext();
+	auto &function = input.GetBoundFunction();
+	auto &arguments = input.GetArguments();
 	auto bind = make_uniq<PredictBindData>();
 	bind->function_name = fname;
 
 	// arg 0: the whole row as a STRUCT (the table alias from query_table)
-	if (arguments[0]->return_type.id() != LogicalTypeId::STRUCT) {
+	if (arguments[0]->GetReturnType().id() != LogicalTypeId::STRUCT) {
 		throw BinderException("%s: first argument must be the whole-row STRUCT — pass the table alias, e.g. "
 		                      "SELECT %s(t, 'churned') FROM query_table('customers') t",
 		                      fname, fname);
 	}
-	bind->row_type = arguments[0]->return_type;
+	bind->row_type = arguments[0]->GetReturnType();
 	auto &fields = StructType::GetChildTypes(bind->row_type);
 
 	// arg 1: constant target column name, resolved case-insensitively
@@ -264,7 +268,7 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 
 	bool found = false;
 	for (idx_t i = 0; i < fields.size(); i++) {
-		if (StringUtil::CIEquals(fields[i].first, bind->target)) {
+		if (StringUtil::CIEquals(fields[i].first.GetIdentifierName(), bind->target)) {
 			bind->target_idx = i;
 			bind->target_type = fields[i].second;
 			found = true;
@@ -298,7 +302,7 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 		                      static_cast<unsigned long long>(feature_count));
 	}
 
-	function.return_type = is_window ? bind->WindowStructType() : bind->ListStructType();
+	function.SetReturnType(is_window ? bind->WindowStructType() : bind->ListStructType());
 
 	// capture engine settings + the DB handle now: finalize runs on a worker
 	// thread with no ClientContext (tabfm_engine.cpp reads these).
@@ -329,14 +333,12 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 	return std::move(bind);
 }
 
-unique_ptr<FunctionData> PredictAggBind(ClientContext &context, AggregateFunction &function,
-                                        vector<unique_ptr<Expression>> &arguments) {
-	return PredictBindInternal(context, function, arguments, "tabfm_predict_agg", false);
+unique_ptr<FunctionData> PredictAggBind(BindAggregateFunctionInput &input) {
+	return PredictBindInternal(input, "tabfm_predict_agg", false);
 }
 
-unique_ptr<FunctionData> PredictWinBind(ClientContext &context, AggregateFunction &function,
-                                        vector<unique_ptr<Expression>> &arguments) {
-	return PredictBindInternal(context, function, arguments, "tabfm_predict_win", true);
+unique_ptr<FunctionData> PredictWinBind(BindAggregateFunctionInput &input) {
+	return PredictBindInternal(input, "tabfm_predict_win", true);
 }
 
 //===--------------------------------------------------------------------===//
@@ -390,10 +392,12 @@ struct PredictAggState {
 	WindowRowReader *reader;
 };
 
-void PredictStateInitialize(const AggregateFunction &, data_ptr_t state_ptr) {
-	auto &state = *reinterpret_cast<PredictAggState *>(state_ptr);
-	state.rows = nullptr;
-	state.reader = nullptr;
+void PredictStateInitialize(AggregateStateInput &, data_ptr_t *states, idx_t count) {
+	for (idx_t i = 0; i < count; i++) {
+		auto &state = *reinterpret_cast<PredictAggState *>(states[i]);
+		state.rows = nullptr;
+		state.reader = nullptr;
+	}
 }
 
 void FreeState(PredictAggState &state) {
@@ -406,7 +410,7 @@ void FreeState(PredictAggState &state) {
 void PredictStateDestroy(Vector &state_vector, AggregateInputData &, idx_t count) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<PredictAggState **>(sdata.data);
+	auto states = reinterpret_cast<PredictAggState *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		FreeState(*states[sdata.sel->get_index(i)]);
 	}
@@ -428,14 +432,14 @@ struct StateVectorCleanup {
 		}
 		UnifiedVectorFormat sdata;
 		state_vector.ToUnifiedFormat(count, sdata);
-		auto states = reinterpret_cast<PredictAggState **>(sdata.data);
+		auto states = reinterpret_cast<PredictAggState *const *>(sdata.data);
 		for (idx_t i = 0; i < count; i++) {
 			FreeState(*states[sdata.sel->get_index(i)]);
 		}
 	}
 };
 
-idx_t PredictStateSize(const AggregateFunction &) {
+idx_t PredictStateSize(AggregateStateInput &) {
 	return sizeof(PredictAggState);
 }
 
@@ -448,7 +452,7 @@ void PredictAggUpdate(Vector inputs[], AggregateInputData &aggr_input_data, idx_
 
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<PredictAggState **>(sdata.data);
+	auto states = reinterpret_cast<PredictAggState *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
@@ -476,8 +480,8 @@ void PredictAggCombine(Vector &source_vector, Vector &target_vector, AggregateIn
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<PredictAggState **>(source_data.data);
-	auto targets = reinterpret_cast<PredictAggState **>(target_data.data);
+	auto sources = reinterpret_cast<PredictAggState *const *>(source_data.data);
+	auto targets = reinterpret_cast<PredictAggState *const *>(target_data.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto &source = *sources[source_data.sel->get_index(i)];
@@ -517,15 +521,15 @@ vector<Value> RowChildren(const Value &row_value, const LogicalType &row_type) {
 	return StructValue::GetChildren(row_value);
 }
 
-void PredictAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_data, Vector &result, idx_t count,
+void PredictAggFinalize(Vector &state_vector, AggregateFinalizeInputData &aggr_input_data, Vector &result, idx_t count,
                         idx_t offset) {
 	auto &bind = aggr_input_data.bind_data->Cast<PredictBindData>();
 	StateVectorCleanup guard {state_vector, count};
 
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<PredictAggState **>(sdata.data);
-	auto list_entries = FlatVector::GetData<list_entry_t>(result);
+	auto states = reinterpret_cast<PredictAggState *const *>(sdata.data);
+	auto list_entries = FlatVector::GetDataMutable<list_entry_t>(result);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
@@ -600,7 +604,7 @@ void PredictWinCombine(Vector &, Vector &, AggregateInputData &, idx_t) {
 	ThrowPredictWinNeedsOver();
 }
 
-void PredictWinFinalize(Vector &, AggregateInputData &, Vector &, idx_t, idx_t) {
+void PredictWinFinalize(Vector &, AggregateFinalizeInputData &, Vector &, idx_t, idx_t) {
 	ThrowPredictWinNeedsOver();
 }
 
@@ -618,10 +622,10 @@ void PredictWinFinalize(Vector &, AggregateInputData &, Vector &, idx_t, idx_t) 
 void WriteWindowResult(Vector &result, idx_t rid, const PredictBindData &bind, const Value &yhat, const Value &score,
                        const Value &proba) {
 	auto &entries = StructVector::GetEntries(result);
-	entries[0]->SetValue(rid, yhat);
-	entries[1]->SetValue(rid, score);
+	entries[0].SetValue(rid, yhat);
+	entries[1].SetValue(rid, score);
 	if (bind.EmitProba()) {
-		entries[2]->SetValue(rid, proba);
+		entries[2].SetValue(rid, proba);
 	}
 }
 
@@ -703,11 +707,11 @@ AggregateFunction MakePredictFunction(const string &name, bool with_opts, bool i
 	if (with_opts) {
 		arguments.push_back(LogicalType::ANY); // MAP or STRUCT; LIST redirects at bind
 	}
-	AggregateFunction function(name, std::move(arguments), LogicalType::ANY, PredictStateSize,
+	AggregateFunction function(Identifier(name), std::move(arguments), LogicalType::ANY, PredictStateSize,
 	                           PredictStateInitialize, is_window ? PredictWinUpdate : PredictAggUpdate,
 	                           is_window ? PredictWinCombine : PredictAggCombine,
 	                           is_window ? PredictWinFinalize : PredictAggFinalize,
-	                           /*simple_update=*/nullptr, is_window ? PredictWinBind : PredictAggBind,
+	                           /*cluster_update=*/nullptr, is_window ? PredictWinBind : PredictAggBind,
 	                           PredictStateDestroy);
 	if (is_window) {
 		function.SetWindowCallback(PredictWinWindow);
@@ -716,7 +720,7 @@ AggregateFunction MakePredictFunction(const string &name, bool with_opts, bool i
 }
 
 void RegisterPredictSet(ExtensionLoader &loader, const string &full_name, bool is_window) {
-	AggregateFunctionSet set(full_name);
+	AggregateFunctionSet set{Identifier(full_name)};
 	set.AddFunction(MakePredictFunction(full_name, false, is_window));
 	set.AddFunction(MakePredictFunction(full_name, true, is_window));
 

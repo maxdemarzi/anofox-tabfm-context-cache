@@ -749,7 +749,7 @@ ColumnDataCollection BuildCollection(const vector<vector<Value>> &rows, const Lo
 	for (idx_t c = 0; c < fields.size(); c++) {
 		types.push_back(fields[c].second);
 		PreprocessColumnSpec spec;
-		spec.name = fields[c].first;
+		spec.name = fields[c].first.GetIdentifierName();
 		spec.type = fields[c].second;
 		spec.is_target = (c == target_idx);
 		spec.is_feature = (c != target_idx);

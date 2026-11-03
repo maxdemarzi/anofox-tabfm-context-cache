@@ -25,8 +25,9 @@ namespace anofox {
 
 // Helper to register a scalar function with an alias
 inline void RegisterScalarFunctionWithAlias(ExtensionLoader &loader, ScalarFunction func,
-                                            const std::string &alias_name,
+                                            const std::string &alias_name_str,
                                             vector<FunctionDescription> descriptions = {}) {
+	Identifier alias_name(alias_name_str);
 	// Register primary with metadata
 	CreateScalarFunctionInfo primary_info(func);
 	primary_info.descriptions = descriptions;
@@ -44,8 +45,9 @@ inline void RegisterScalarFunctionWithAlias(ExtensionLoader &loader, ScalarFunct
 
 // Helper to register a scalar function set with an alias
 inline void RegisterScalarFunctionSetWithAlias(ExtensionLoader &loader, ScalarFunctionSet func_set,
-                                               const std::string &alias_name,
+                                               const std::string &alias_name_str,
                                                vector<FunctionDescription> descriptions = {}) {
+	Identifier alias_name(alias_name_str);
 	// Register primary with metadata
 	CreateScalarFunctionInfo primary_info(func_set);
 	primary_info.descriptions = descriptions;
@@ -54,7 +56,7 @@ inline void RegisterScalarFunctionSetWithAlias(ExtensionLoader &loader, ScalarFu
 	// Register alias: copy-then-rename every overload so all metadata survives
 	ScalarFunctionSet alias_set(alias_name);
 	for (auto &func : func_set.functions) {
-		auto alias_func = func;
+		auto alias_func = *func;
 		alias_func.name = alias_name;
 		alias_set.AddFunction(std::move(alias_func));
 	}
@@ -66,8 +68,9 @@ inline void RegisterScalarFunctionSetWithAlias(ExtensionLoader &loader, ScalarFu
 
 // Helper to register a table function with an alias
 inline void RegisterTableFunctionWithAlias(ExtensionLoader &loader, TableFunction func,
-                                           const std::string &alias_name,
+                                           const std::string &alias_name_str,
                                            vector<FunctionDescription> descriptions = {}) {
+	Identifier alias_name(alias_name_str);
 	// Register primary with metadata
 	CreateTableFunctionInfo primary_info(func);
 	primary_info.descriptions = descriptions;
@@ -85,8 +88,9 @@ inline void RegisterTableFunctionWithAlias(ExtensionLoader &loader, TableFunctio
 
 // Helper to register a table function set with an alias
 inline void RegisterTableFunctionSetWithAlias(ExtensionLoader &loader, TableFunctionSet func_set,
-                                              const std::string &alias_name,
+                                              const std::string &alias_name_str,
                                               vector<FunctionDescription> descriptions = {}) {
+	Identifier alias_name(alias_name_str);
 	// Register primary with metadata
 	CreateTableFunctionInfo primary_info(func_set);
 	primary_info.descriptions = descriptions;
@@ -95,7 +99,7 @@ inline void RegisterTableFunctionSetWithAlias(ExtensionLoader &loader, TableFunc
 	// Register alias: copy-then-rename every overload so all metadata survives
 	TableFunctionSet alias_set(alias_name);
 	for (auto &func : func_set.functions) {
-		auto alias_func = func;
+		auto alias_func = *func;
 		alias_func.name = alias_name;
 		alias_set.AddFunction(std::move(alias_func));
 	}
