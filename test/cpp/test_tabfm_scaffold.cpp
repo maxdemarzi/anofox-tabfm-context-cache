@@ -12,5 +12,7 @@ TEST_CASE("anofox_tabfm scaffold: DuckDB opens and answers", "[tabfm]") {
 	duckdb::Connection con(db);
 	auto result = con.Query("SELECT 21 * 2");
 	REQUIRE(!result->HasError());
-	REQUIRE(result->GetValue(0, 0).GetValue<int32_t>() == 42);
+	auto chunk = result->Fetch();
+	REQUIRE(chunk);
+	REQUIRE(chunk->GetValue(0, 0).GetValue<int32_t>() == 42);
 }
