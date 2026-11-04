@@ -151,9 +151,26 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     )
     target_link_libraries(anofox_tabfm_unittest_tests PRIVATE duckdb_static tabfm_onnxruntime)
 
+    # `unittest` lives in another directory; linking it from here needs CMP0079.
+    cmake_policy(SET CMP0079 NEW)
+
+    # The deferred call runs in the top-level directory, where EXTENSION_NAME is
+    # not defined, so hand the target name over through a global property.
+    set_property(GLOBAL PROPERTY ANOFOX_TABFM_EXT_TARGET ${EXTENSION_NAME})
+
     function(anofox_tabfm_register_cpp_tests)
+        get_property(ext_target GLOBAL PROPERTY ANOFOX_TABFM_EXT_TARGET)
         if(TARGET unittest)
             target_sources(unittest PRIVATE $<TARGET_OBJECTS:anofox_tabfm_unittest_tests>)
+            # The tests call src/ internals that the extension's own entry point
+            # never references, so a gc'd link of libduckdb leaves them out. Pull
+            # the whole archive in. Plain signature: DuckDB's own call to
+            # target_link_libraries(unittest ...) is, and the two can't be mixed.
+            if(NOT MSVC)
+                target_link_libraries(unittest -Wl,--whole-archive ${ext_target} -Wl,--no-whole-archive)
+            else()
+                target_link_libraries(unittest ${ext_target})
+            endif()
         endif()
     endfunction()
     cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL anofox_tabfm_register_cpp_tests)

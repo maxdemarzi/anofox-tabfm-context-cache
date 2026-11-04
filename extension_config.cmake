@@ -12,3 +12,8 @@ endif()
 duckdb_extension_load(anofox_tabfm
     SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
     LOAD_TESTS)
+
+# DuckDB 2.0 only builds (does not link) an extension named by
+# duckdb_extension_load. The C++ unit tests in test/cpp reference src/
+# directly, so link it into the unittest binary as v1.5 did by default.
+duckdb_extension_statically_link(anofox_tabfm)
