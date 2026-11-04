@@ -86,8 +86,8 @@ endforeach()
 
 # posthog-telemetry reads the machine id from the IORegistry on macOS.
 if(APPLE)
-    target_link_libraries(${EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
-    target_link_libraries(${LOADABLE_EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
+    target_link_libraries(${EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation" "-framework Security")
+    target_link_libraries(${LOADABLE_EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation" "-framework Security")
 endif()
 
 # posthog-telemetry's machine id (GetMacAddress -> GetAdaptersInfo) needs the
