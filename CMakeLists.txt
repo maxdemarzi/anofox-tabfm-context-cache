@@ -166,7 +166,10 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
             # never references, so a gc'd link of libduckdb leaves them out. Pull
             # the whole archive in. Plain signature: DuckDB's own call to
             # target_link_libraries(unittest ...) is, and the two can't be mixed.
-            if(NOT MSVC)
+            if(APPLE)
+                # ld64 has no --whole-archive; -force_load takes the archive path.
+                target_link_libraries(unittest -Wl,-force_load,$<TARGET_FILE:${ext_target}>)
+            elseif(NOT MSVC)
                 target_link_libraries(unittest -Wl,--whole-archive ${ext_target} -Wl,--no-whole-archive)
             else()
                 target_link_libraries(unittest ${ext_target})
